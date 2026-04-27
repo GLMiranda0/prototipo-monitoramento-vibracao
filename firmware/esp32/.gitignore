@@ -1,0 +1,6 @@
+.pio/
+.vscode/
+build/
+.clang_complete
+.gcc-flags.json
+*.o
