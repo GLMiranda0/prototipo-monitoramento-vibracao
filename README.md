@@ -1,10 +1,10 @@
 # Sistema de Monitoramento de Vibração com ESP32 e IA
 
-## 📋 Objetivo
+##  Objetivo
 
 Desenvolver um sistema inteligente de monitoramento de vibração em equipamentos mecânicos (ex: esteira) capaz de detectar anomalias em tempo real utilizando aprendizado de máquina e classificar o estado operacional do equipamento.
 
-## 🔧 Funcionamento
+##  Funcionamento
 
 O sistema opera seguindo este pipeline:
 
@@ -21,7 +21,7 @@ Equipamento → Sensor MPU6050 → ESP32 → Processamento → Modelo IA → Cla
 5. **Classificação IA**: Modelo treinado para identificar Normal/Anomalia
 6. **Acionamento de Alarme**: Notificação em caso de detecção anômala
 
-## 💻 Tecnologias
+##  Tecnologias
 
 - **Microcontrolador**: ESP32 (WROOM-32)
 - **Sensor**: MPU6050 (Acelerômetro 6-DOF)
@@ -30,7 +30,7 @@ Equipamento → Sensor MPU6050 → ESP32 → Processamento → Modelo IA → Cla
 - **Protocolo de Sensor**: I2C (SDA: GPIO21, SCL: GPIO22)
 - **Machine Learning**: TensorFlow Lite / Scikit-learn (modelos treinados offline)
 
-## 📦 Estrutura do Projeto
+##  Estrutura do Projeto
 
 ```
 prototipo-monitoramento-vibracao/
@@ -63,7 +63,7 @@ prototipo-monitoramento-vibracao/
 └── LICENSE
 ```
 
-## 🚀 Como Executar
+##  Como Executar
 
 ### Pré-requisitos
 
@@ -101,37 +101,3 @@ O MPU6050 deve ser conectado ao ESP32 nos seguintes pinos:
 - **SCL**: GPIO22
 - **VCC**: 3.3V
 - **GND**: GND
-
-## 📊 Formato de Dados
-
-Os dados transmitidos via serial seguem este formato:
-
-```
-[TIMESTAMP] Aceleração: X=0.12, Y=0.08, Z=9.81, Magnitude=9.85, Filtrada=9.84, Status=NORMAL
-```
-
-## 🤖 Integração com IA
-
-O projeto está preparado para integração com modelos de Machine Learning. Os dados podem ser:
-
-1. **Coletados** em `data/treino/` para treinamento offline
-2. **Processados** com scripts em `models/`
-3. **Convertidos** para modelos TensorFlow Lite para inferência no ESP32
-
-Veja `models/anomaly_detector.py` para exemplos de treinamento.
-
-## 📝 Licença
-
-MIT License - veja LICENSE para mais detalhes
-
-## 👨‍💻 Autor
-
-**GLMiranda0** - Desenvolvedor Principal
-
-## 📧 Contato
-
-Para dúvidas ou sugestões, abra uma issue no repositório.
-
----
-
-**Última atualização**: 2026-04-27
