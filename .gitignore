@@ -4,6 +4,7 @@
 .clang_complete
 .gcc-flags.json
 .DS_Store
+src/secrets.h
 
 # Build output
 build/
