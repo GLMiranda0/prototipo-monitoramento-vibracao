@@ -4,6 +4,7 @@
 #include <WiFiMulti.h>
 #include <time.h>
 #include <ArduinoJson.h>
+#include <math.h>
 #include "secrets.h"
 
 #define MPU_ADDR   0x68
@@ -15,14 +16,13 @@ float alpha = 0.2;
 float Vf    = 0;
 
 float calcularMagnitude(int16_t x, int16_t y, int16_t z) {
-  return sqrt(x * x + y * y + z * z);
+  return sqrt((float)x*x + (float)y*y + (float)z*z);
 }
 
 void setup() {
   Serial.begin(115200);
   Wire.begin(21, 22);
 
-  // Registra todas as redes do secrets.h
   const char* networks[][2] = WIFI_NETWORKS;
   int count = sizeof(networks) / sizeof(networks[0]);
   for (int i = 0; i < count; i++) {
@@ -53,7 +53,6 @@ void setup() {
 }
 
 void loop() {
-  // Reconecta automaticamente se cair
   if (wifiMulti.run() != WL_CONNECTED) {
     Serial.println("Wi-Fi desconectado, reconectando...");
     delay(500);
@@ -63,6 +62,14 @@ void loop() {
   DynamicJsonDocument doc(6144);
   JsonArray batch = doc.createNestedArray("batch");
 
+  // Acumuladores para features
+  float soma_quadrados = 0;
+  float peak           = 0;
+  float soma           = 0;
+  float soma_quad_dev  = 0;
+  float mags[BATCH_SIZE];
+
+  // ── Coleta do batch ───────────────────────────────────────────────────────
   for (int i = 0; i < BATCH_SIZE; i++) {
     int16_t AcX, AcY, AcZ;
 
@@ -78,6 +85,12 @@ void loop() {
     float V = calcularMagnitude(AcX, AcY, AcZ);
     Vf = alpha * V + (1 - alpha) * Vf;
 
+    // Acumula para features
+    mags[i]        = V;
+    soma          += V;
+    soma_quadrados += V * V;
+    if (V > peak) peak = V;
+
     struct timeval tv;
     gettimeofday(&tv, nullptr);
     long long ts_ms = (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
@@ -92,7 +105,21 @@ void loop() {
     delay(20);
   }
 
-  doc["ema"] = Vf;
+  // ── Cálculo das features ──────────────────────────────────────────────────
+  float media = soma / BATCH_SIZE;
+  float rms   = sqrt(soma_quadrados / BATCH_SIZE);
+
+  for (int i = 0; i < BATCH_SIZE; i++) {
+    float dev = mags[i] - media;
+    soma_quad_dev += dev * dev;
+  }
+  float std_dev = sqrt(soma_quad_dev / BATCH_SIZE);
+
+  // ── Monta payload final ───────────────────────────────────────────────────
+  doc["ema"]  = Vf;
+  doc["rms"]  = rms;
+  doc["peak"] = peak;
+  doc["std"]  = std_dev;
 
   serializeJson(doc, Serial);
   Serial.println();
