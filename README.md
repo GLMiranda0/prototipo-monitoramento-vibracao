@@ -18,9 +18,16 @@ Equipamento → Sensor MPU6050 → ESP32 → Wi-Fi → Dashboard → Modelo IA �
 2. **Cálculo de Magnitude**: V = √(x² + y² + z²)
 3. **Filtro EMA**: Suavização dos dados com filtro exponencial móvel (α = 0.2)
 4. **Batching**: Agrupamento de 50 amostras (~1s) em um único payload JSON
+<<<<<<< HEAD
 5. **Transmissão**: Envio via Serial com timestamp Unix em milissegundos (sincronizado via NTP)
 6. **Visualização**: Dashboard Streamlit em tempo real
 7. **Classificação IA**: Modelo treinado para identificar Normal/Anomalia *(em desenvolvimento)*
+=======
+5. **Extração de Features**: Cálculo de RMS, Peak e Desvio Padrão sobre o batch
+6. **Transmissão**: Envio via Serial com timestamp Unix em milissegundos (sincronizado via NTP)
+7. **Visualização**: Dashboard Streamlit em tempo real
+8. **Classificação IA**: Modelo treinado para identificar Normal/Anomalia *(em desenvolvimento)*
+>>>>>>> 51632b98bf28f05dcf5325db388b81d33facb8a0
 
 ### Formato do Payload JSON
 
@@ -28,7 +35,14 @@ A cada ~1 segundo a ESP32 envia um JSON com o seguinte formato:
 
 ```json
 {
+<<<<<<< HEAD
   "ema": 17305.4,
+=======
+  "ema":  17305.4,
+  "rms":  17298.7,
+  "peak": 17338.3,
+  "std":  42.1,
+>>>>>>> 51632b98bf28f05dcf5325db388b81d33facb8a0
   "batch": [
     { "ts": 1714300000020, "ax": -572, "ay": 0, "az": 17468, "mag": 17249.2 },
     { "ts": 1714300000040, "ax": -591, "ay": -12, "az": 17401, "mag": 17298.3 }
@@ -36,9 +50,36 @@ A cada ~1 segundo a ESP32 envia um JSON com o seguinte formato:
 }
 ```
 
+<<<<<<< HEAD
 | Campo | Descrição |
 |-------|-----------|
 | `ema` | Valor do filtro EMA ao final do batch — principal indicador de tendência |
+=======
+### Features Extraídas
+
+Todos os valores são calculados sobre as 50 amostras do batch (~1 segundo de sinal) e representam o sinal no **domínio do tempo**.
+
+| Feature | Fórmula | O que representa |
+|---------|---------|-----------------|
+| `ema` | `Vf = α·V + (1-α)·Vf` | Tendência de longo prazo — sobe gradualmente com degradação |
+| `rms` | `√(Σmag² / n)` | Energia média da vibração — principal indicador de severidade |
+| `peak` | `max(mag)` | Valor máximo do batch — sensível a impactos e eventos impulsivos |
+| `std` | `√(Σ(mag - média)² / n)` | Variabilidade do sinal — aumenta com folgas e desequilíbrios |
+
+#### Como as features se complementam na detecção de anomalia
+
+| Situação | EMA | RMS | Peak | Std |
+|----------|-----|-----|------|-----|
+| Normal | Estável | Baixo e estável | Proporcional ao RMS | Baixo |
+| Degradação gradual | Sobe devagar | Sobe gradualmente | Acompanha RMS | Aumenta levemente |
+| Impacto / folga | Pouco afetado | Sobe um pouco | Pico isolado alto | Sobe bastante |
+| Falha severa | Alto | Alto | Muito alto | Alto e instável |
+
+### Campos do Batch
+
+| Campo | Descrição |
+|-------|-----------|
+>>>>>>> 51632b98bf28f05dcf5325db388b81d33facb8a0
 | `ts`  | Timestamp Unix em milissegundos (sincronizado via NTP) |
 | `ax` `ay` `az` | Aceleração bruta nos 3 eixos (unidade: LSB do MPU6050) |
 | `mag` | Magnitude bruta da amostra: √(ax² + ay² + az²) |
@@ -123,6 +164,11 @@ streamlit run dashboard/dashboard.py
 
 3. Acesse `http://localhost:8501`, selecione a porta COM da ESP32 na sidebar e clique em **Conectar**.
 
+<<<<<<< HEAD
+=======
+> **Atenção:** a porta Serial só pode ser usada por um processo por vez. Feche o monitor serial do PlatformIO antes de abrir o dashboard.
+
+>>>>>>> 51632b98bf28f05dcf5325db388b81d33facb8a0
 ### Configuração do Sensor
 
 O MPU6050 deve ser conectado ao ESP32 nos seguintes pinos:
@@ -142,12 +188,22 @@ O projeto segue versionamento semântico simplificado:
 
 | Versão | Tag | Descrição |
 |--------|-----|-----------|
+<<<<<<< HEAD
 | 0.1 | `v0.1` | Leitura Serial básica, cálculo de magnitude e filtro EMA |
 | 0.11 | `v0.11` | Conexão Wi-Fi multi-rede, timestamp NTP e secrets.h |
 | 0.12 | `v0.12` | Batch JSON (50 amostras/1s), EMA no payload, dashboard Streamlit |
 | 0.2 | `v0.2` | Integração MQTT *(planejado)* |
 | 0.3 | `v0.3` | Coleta de dataset e modelo de detecção de anomalia *(planejado)* |
 | 1.0 | `v1.0` | Entrega final à faculdade *(planejado)* |
+=======
+| 0.1  | `v0.1`  | Leitura Serial básica, cálculo de magnitude e filtro EMA |
+| 0.11 | `v0.11` | Conexão Wi-Fi multi-rede, timestamp NTP e secrets.h |
+| 0.12 | `v0.12` | Batch JSON (50 amostras/1s), EMA no payload, dashboard Streamlit |
+| 0.13 | `v0.13` | Features no firmware: RMS, Peak e Desvio Padrão; dashboard atualizado |
+| 0.2  | `v0.2`  | Integração MQTT *(planejado)* |
+| 0.3  | `v0.3`  | Coleta de dataset e modelo de detecção de anomalia *(planejado)* |
+| 1.0  | `v1.0`  | Entrega final à faculdade *(planejado)* |
+>>>>>>> 51632b98bf28f05dcf5325db388b81d33facb8a0
 
 ## Roadmap
 
@@ -155,6 +211,10 @@ O projeto segue versionamento semântico simplificado:
 - [x] Transmissão com timestamp NTP
 - [x] Payload em batch JSON
 - [x] Dashboard Streamlit em tempo real
+<<<<<<< HEAD
+=======
+- [x] Features de domínio do tempo: EMA, RMS, Peak, Desvio Padrão
+>>>>>>> 51632b98bf28f05dcf5325db388b81d33facb8a0
 - [ ] Broker MQTT para transmissão sem fio
 - [ ] Acoplamento à esteira motorizada (impressão 3D)
 - [ ] Coleta de dataset Normal/Anômalo
