@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <WiFi.h>
 #include <WiFiMulti.h>
+#include <PubSubClient.h>
 #include <time.h>
 #include <ArduinoJson.h>
 #include <math.h>
@@ -9,17 +10,22 @@
 
 #define MPU_ADDR    0x68
 #define BATCH_SIZE  50
-#define CAL_SAMPLES 200   // amostras usadas na calibração da gravidade
+#define CAL_SAMPLES 200
 
-WiFiMulti wifiMulti;
+// ── Tópicos MQTT ──────────────────────────────────────────────────────────────
+#define TOPIC_FEATURES  "vibration/esp32/features"
+#define TOPIC_STATUS    "vibration/esp32/status"
+#define TOPIC_CAL       "vibration/esp32/calibration"
+
+WiFiMulti  wifiMulti;
+WiFiClient wifiClient;
+PubSubClient mqtt(wifiClient);
 
 float alpha = 0.2;
 float Vf    = 0;
 
-// ── Magnitude do baseline de gravidade (em LSB) ───────────────────────────────
-// Calculada uma vez na calibração: média de √(ax² + ay² + az²) em repouso
-// Usada para normalizar cada amostra → repouso ≈ 1.0, vibrações > 1.0
-float grav_magnitude = 1.0;   // inicializado em 1.0 para evitar divisão por zero
+// ── Baseline de gravidade ─────────────────────────────────────────────────────
+float grav_magnitude = 1.0;
 bool  calibrado      = false;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -36,8 +42,7 @@ void lerMPU(int16_t &ax, int16_t &ay, int16_t &az) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Calibração: captura N amostras parado e calcula a magnitude média de repouso
-// Essa magnitude vira o divisor de todas as amostras futuras
+// Calibração: calcula a magnitude média de repouso
 // ─────────────────────────────────────────────────────────────────────────────
 void calibrarGravidade(int amostras = CAL_SAMPLES) {
   Serial.printf("Calibrando gravidade com %d amostras — mantenha o sensor parado...\n", amostras);
@@ -55,12 +60,17 @@ void calibrarGravidade(int amostras = CAL_SAMPLES) {
 
   Serial.printf("Magnitude de repouso calibrada: %.2f LSB\n", grav_magnitude);
   Serial.println("Em operacao normal: repouso ≈ 1.0 | vibracao > 1.0");
+
+  // Publica confirmação no tópico de calibração
+  if (mqtt.connected()) {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "{\"grav_magnitude\":%.2f}", grav_magnitude);
+    mqtt.publish(TOPIC_CAL, msg, true);  // retained=true
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Magnitude normalizada pela gravidade
-// Repouso → ~1.0 | Vibração leve → ~1.05–1.1 | Vibração severa → >1.3
-// Independente da orientação do sensor
 // ─────────────────────────────────────────────────────────────────────────────
 float calcularMagnitudeNorm(int16_t x, int16_t y, int16_t z) {
   float mag_bruta = sqrt((float)x*x + (float)y*y + (float)z*z);
@@ -68,8 +78,24 @@ float calcularMagnitudeNorm(int16_t x, int16_t y, int16_t z) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Reconexão MQTT (sem bloquear o loop)
+// ─────────────────────────────────────────────────────────────────────────────
+void reconnectMQTT() {
+  if (mqtt.connected()) return;
+
+  Serial.print("Conectando ao broker MQTT...");
+  // Last Will: marca o dispositivo como offline se a conexão cair
+  if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD, TOPIC_STATUS, 0, true, "offline")) {
+    Serial.println(" conectado.");
+    mqtt.publish(TOPIC_STATUS, "online", true);  // retained=true
+  } else {
+    Serial.printf(" falhou (rc=%d), tentando novamente no próximo batch.\n", mqtt.state());
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Processa comandos recebidos via Serial
-// CAL → recalibra a magnitude de repouso sem reiniciar
+// CAL → recalibra sem reiniciar
 // ─────────────────────────────────────────────────────────────────────────────
 void processarComandoSerial() {
   if (!Serial.available()) return;
@@ -116,14 +142,18 @@ void setup() {
   }
   Serial.println("\nNTP sincronizado.");
 
-  // ── Acorda o MPU6050 ──────────────────────────────────────────────────────
+  // ── MQTT ──────────────────────────────────────────────────────────────────
+  mqtt.setServer(MQTT_BROKER, MQTT_PORT);
+  mqtt.setBufferSize(512);   // suficiente para o JSON de features
+  reconnectMQTT();
+
+  // ── MPU6050 ───────────────────────────────────────────────────────────────
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(0x6B);
   Wire.write(0);
   Wire.endTransmission();
-  delay(100);  // aguarda sensor estabilizar
+  delay(100);
 
-  // ── Calibração inicial ────────────────────────────────────────────────────
   calibrarGravidade(CAL_SAMPLES);
   Serial.println("Sistema pronto. Envie 'CAL' pela Serial para recalibrar.\n");
 }
@@ -132,12 +162,15 @@ void setup() {
 
 void loop() {
   processarComandoSerial();
+  mqtt.loop();  // mantém a conexão MQTT viva
 
   if (wifiMulti.run() != WL_CONNECTED) {
     Serial.println("Wi-Fi desconectado, reconectando...");
     delay(500);
     return;
   }
+
+  reconnectMQTT();  // reconecta se necessário, sem bloquear
 
   DynamicJsonDocument doc(6144);
   JsonArray batch = doc.createNestedArray("batch");
@@ -154,7 +187,6 @@ void loop() {
     int16_t AcX, AcY, AcZ;
     lerMPU(AcX, AcY, AcZ);
 
-    // Magnitude normalizada: repouso ≈ 1.0, vibrações > 1.0
     float V = calcularMagnitudeNorm(AcX, AcY, AcZ);
     Vf = alpha * V + (1 - alpha) * Vf;
 
@@ -172,7 +204,7 @@ void loop() {
     sample["ax"]  = AcX;
     sample["ay"]  = AcY;
     sample["az"]  = AcZ;
-    sample["mag"] = V;   // magnitude normalizada
+    sample["mag"] = V;
 
     delay(20);
   }
@@ -187,7 +219,7 @@ void loop() {
   }
   float std_dev = sqrt(soma_quad_dev / BATCH_SIZE);
 
-  // ── Monta payload final ───────────────────────────────────────────────────
+  // ── Monta payload Serial (batch completo) ─────────────────────────────────
   doc["ema"]  = Vf;
   doc["rms"]  = rms;
   doc["peak"] = peak;
@@ -195,4 +227,17 @@ void loop() {
 
   serializeJson(doc, Serial);
   Serial.println();
+
+  // ── Publica features via MQTT ─────────────────────────────────────────────
+  if (mqtt.connected()) {
+    StaticJsonDocument<128> feat;
+    feat["ema"]  = serialized(String(Vf,    4));
+    feat["rms"]  = serialized(String(rms,   4));
+    feat["peak"] = serialized(String(peak,  4));
+    feat["std"]  = serialized(String(std_dev, 4));
+
+    char buf[128];
+    serializeJson(feat, buf);
+    mqtt.publish(TOPIC_FEATURES, buf);
+  }
 }
