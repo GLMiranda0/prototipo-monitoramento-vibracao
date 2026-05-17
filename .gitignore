@@ -1,49 +1,29 @@
 # PlatformIO
 .pio/
-.vscode/
+.pioenvs/
+.piolibdeps/
 .clang_complete
 .gcc-flags.json
-.DS_Store
-src/secrets.h
 
-# Build output
-build/
-dist/
-*.o
-*.a
-*.so
+# Credenciais (nunca versionar)
+src/secrets.h
+*.env
+.env*
 
 # IDE
+.vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Dependencies
-.pioenvs/
-.piolibdeps/
-lib/
+# OS
+.DS_Store
+Thumbs.db
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
+# Build
+build/
+dist/
+*.o
+*.a
 *.so
-.Python
-env/
-venv/
-ENV/
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
-
-# Data
-data/**/*.csv
-!data/treino/.gitkeep
-!data/teste/.gitkeep
-
-# Models
-models/**/*.h5
-models/**/*.pkl
-models/**/*.joblib

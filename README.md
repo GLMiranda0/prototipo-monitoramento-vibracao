@@ -1,58 +1,39 @@
-# Sistema de Monitoramento de Vibração com ESP32 e IA
+# Sistema de Monitoramento de Vibração com ESP32
 
 ## Objetivo
 
-Desenvolver um sistema inteligente de monitoramento de vibração em equipamentos mecânicos (ex: esteira) capaz de detectar anomalias em tempo real utilizando aprendizado de máquina e classificar o estado operacional do equipamento como **Normal** ou **Anômalo**.
+Desenvolver um sistema de monitoramento de vibração em equipamentos mecânicos (ex: esteira) capaz de detectar anomalias em tempo real e classificar o estado operacional como **Normal** ou **Anômalo**.
+
+## Arquitetura
+
+```
+Equipamento → MPU6050 → ESP32 ─── MQTT ──→ Home Assistant / Broker
+                                └── Wi-Fi → Interface Web de Configuração
+```
 
 ## Funcionamento
 
-O sistema opera seguindo este pipeline:
-
-```
-Equipamento → Sensor MPU6050 → ESP32 → Wi-Fi → Dashboard → Modelo IA → Classificação
-```
-
 ### Etapas do Processamento
 
-1. **Aquisição de Dados**: Leitura de acelerações (X, Y, Z) do MPU6050 via I2C a 50 Hz
-2. **Cálculo de Magnitude**: V = √(x² + y² + z²)
-3. **Normalização pela Gravidade**: V_norm = V / grav_magnitude (repouso ≈ 1.0)
-4. **Filtro EMA**: Suavização dos dados com filtro exponencial móvel (α = 0.2)
-5. **Batching**: Agrupamento de 50 amostras (~1s) em um único payload JSON
-6. **Extração de Features**: Cálculo de RMS, Peak e Desvio Padrão sobre o batch
-7. **Transmissão**: Envio via Serial com timestamp Unix em milissegundos (sincronizado via NTP)
-8. **Visualização**: Dashboard Streamlit em tempo real
-9. **Classificação IA**: Modelo treinado para identificar Normal/Anomalia *(em desenvolvimento)*
-
-### Formato do Payload JSON
-
-A cada ~1 segundo a ESP32 envia um JSON com o seguinte formato:
-
-```json
-{
-  "ema":  1.002,
-  "rms":  1.001,
-  "peak": 1.015,
-  "std":  0.003,
-  "batch": [
-    { "ts": 1714300000020, "ax": -572, "ay": 0, "az": 17468, "mag": 1.001 },
-    { "ts": 1714300000040, "ax": -591, "ay": -12, "az": 17401, "mag": 0.999 }
-  ]
-}
-```
+1. **Aquisição**: Leitura de acelerações (X, Y, Z) do MPU6050 via I2C
+2. **Normalização pela Gravidade**: `V_norm = √(x²+y²+z²) / grav_magnitude` (repouso ≈ 1.0)
+3. **Filtro EMA**: Suavização com filtro exponencial móvel configurável (α)
+4. **Batching**: Agrupamento de N amostras em um payload JSON
+5. **Extração de Features**: RMS, Peak e Desvio Padrão sobre o batch
+6. **Transmissão MQTT**: Features publicadas com timestamp NTP
 
 ### Features Extraídas
 
-Todos os valores são calculados sobre as 50 amostras do batch (~1 segundo de sinal) e representam o sinal no **domínio do tempo**. A partir da versão 0.14, todos os valores de magnitude são **normalizados pela gravidade de repouso** — adimensionais, com repouso ≈ 1.0.
+Todos os valores são adimensionais (normalizados pela gravidade de repouso).
 
 | Feature | Fórmula | O que representa |
 |---------|---------|-----------------|
-| `ema` | `Vf = α·V_norm + (1-α)·Vf` | Tendência de longo prazo — sobe gradualmente com degradação |
-| `rms` | `√(Σmag_norm² / n)` | Energia média da vibração — principal indicador de severidade |
-| `peak` | `max(mag_norm)` | Valor máximo do batch — sensível a impactos e eventos impulsivos |
-| `std` | `√(Σ(mag_norm - média)² / n)` | Variabilidade do sinal — aumenta com folgas e desequilíbrios |
+| `ema`  | `Vf = α·V + (1-α)·Vf` | Tendência de longo prazo |
+| `rms`  | `√(Σmag² / n)` | Energia média da vibração |
+| `peak` | `max(mag)` | Valor máximo — sensível a impactos |
+| `std`  | `√(Σ(mag - média)² / n)` | Variabilidade — detecta folgas e desequilíbrios |
 
-#### Referência de valores normalizados
+#### Referência de valores
 
 | Situação | EMA / RMS | Peak | Std Dev |
 |----------|-----------|------|---------|
@@ -60,62 +41,71 @@ Todos os valores são calculados sobre as 50 amostras do batch (~1 segundo de si
 | Vibração leve | ~1.05–1.1 | ~1.1–1.2 | ~0.01–0.05 |
 | Vibração severa | >1.3 | >1.5 | >0.1 |
 
-#### Como as features se complementam na detecção de anomalia
+### Payload MQTT
 
-| Situação | EMA | RMS | Peak | Std |
-|----------|-----|-----|------|-----|
-| Normal | Estável ~1.0 | ~1.0 estável | Proporcional ao RMS | Muito baixo |
-| Degradação gradual | Sobe devagar | Sobe gradualmente | Acompanha RMS | Aumenta levemente |
-| Impacto / folga | Pouco afetado | Sobe um pouco | Pico isolado alto | Sobe bastante |
-| Falha severa | Alto | Alto | Muito alto | Alto e instável |
+```json
+{ "ema": 1.002, "rms": 1.001, "peak": 1.015, "std": 0.003 }
+```
 
-### Campos do Batch
-
-| Campo | Descrição |
-|-------|-----------|
-| `ts`  | Timestamp Unix em milissegundos (sincronizado via NTP) |
-| `ax` `ay` `az` | Aceleração bruta nos 3 eixos (unidade: LSB do MPU6050) |
-| `mag` | Magnitude normalizada pela gravidade: √(ax² + ay² + az²) / grav_magnitude |
+Publicado no tópico `vibration/esp32/features` (configurável).
 
 ### Calibração da Gravidade
 
-No boot, o firmware captura 200 amostras em repouso e calcula a **magnitude média de repouso** (`grav_magnitude`). Todas as amostras subsequentes são divididas por esse valor, tornando a saída adimensional e independente da orientação do sensor.
+No boot, o firmware captura N amostras em repouso e calcula a magnitude média (`grav_magnitude`). Todas as leituras subsequentes são divididas por esse valor.
 
-Para recalibrar sem reiniciar o ESP32, envie o comando `CAL` pelo monitor serial:
+Para recalibrar sem reiniciar:
+- **Interface web**: botão **Calibrar** na página de configuração
+- **Serial**: envie `CAL` (115200 baud)
+
+> Sempre calibre com o sensor parado e fixado na posição definitiva de montagem.
+
+## Interface Web de Configuração
+
+Após conectar ao Wi-Fi, acesse `http://<IP-do-dispositivo>` no navegador.
+
+### Funcionalidades
+
+- **Última leitura**: EMA, RMS, Pico e Desvio Padrão com atualização automática a cada 5s, com código de cores (verde = normal, vermelho = elevado)
+- **MQTT**: broker, porta, usuário, senha, client ID e tópicos
+- **Sensor**: tamanho do batch, intervalo de amostragem, amostras de calibração e α (K do EMA)
+- **Sistema**: redefinir Wi-Fi (volta ao modo AP) e reiniciar dispositivo
+
+Todas as configurações são persistidas no flash (NVS) e sobrevivem a reinicializações.
+
+## Provisionamento Wi-Fi
+
+No primeiro boot (ou após "Redefinir Wi-Fi"), o dispositivo cria um Access Point:
 
 ```
-CAL
+Rede: VibracaoSensor-XXXXXX
 ```
 
-> **Atenção:** execute a calibração sempre com o sensor parado e já fixado na posição definitiva de montagem.
+Conecte-se a essa rede, acesse `192.168.4.1`, configure o Wi-Fi e salve. O dispositivo reinicia e conecta automaticamente. Nos próximos boots o Wi-Fi salvo é usado sem intervenção.
+
+## Hardware
+
+| Pino MPU6050 | Pino ESP32 |
+|---|---|
+| SDA | GPIO 21 |
+| SCL | GPIO 22 |
+| VCC | 3.3V |
+| GND | GND |
 
 ## Tecnologias
 
 - **Microcontrolador**: ESP32 (WROOM-32)
-- **Sensor**: MPU6050 (Acelerômetro 6-DOF)
+- **Sensor**: MPU6050 (acelerômetro 6-DOF via I2C)
 - **Framework**: Arduino + PlatformIO
-- **Comunicação**: Serial (115200 baud) → MQTT *(em desenvolvimento)*
-- **Protocolo de Sensor**: I2C (SDA: GPIO21, SCL: GPIO22)
-- **Sincronização de Tempo**: NTP (`pool.ntp.org`)
-- **Dashboard**: Python + Streamlit
-- **Machine Learning**: Scikit-learn — detecção de anomalia Normal/Anômalo *(em desenvolvimento)*
+- **Comunicação**: MQTT (PubSubClient), Interface Web (WebServer)
+- **Configuração**: WiFiManager + Preferences (NVS)
+- **Sincronização de Tempo**: NTP (`pool.ntp.org`, UTC-3)
 
 ## Estrutura do Projeto
 
 ```
-prototipo-monitoramento-vibracao/
 ├── src/
-│   ├── main.cpp              # Firmware principal
-│   ├── secrets.h             # Credenciais Wi-Fi (ignorado pelo git)
-│   └── secrets.h.example     # Template de credenciais
-├── dashboard/
-│   ├── dashboard.py          # Dashboard Streamlit tempo real
-│   └── requirements.txt      # Dependências Python
-├── data/
-│   ├── treino/               # CSVs de coleta para treinamento
-│   └── teste/
-├── models/
-│   └── anomaly_detector.py   # Modelo de detecção de anomalia
+│   ├── main.cpp       # Firmware principal
+│   └── webui.h        # Interface web (HTML/CSS/JS embutido)
 ├── docs/
 │   └── relatorio/
 ├── platformio.ini
@@ -128,87 +118,43 @@ prototipo-monitoramento-vibracao/
 ### Pré-requisitos
 
 - VS Code com extensão PlatformIO
-- Python 3.8+
 - ESP32 WROOM-32 conectado via USB
 
-### Firmware
+### Upload
 
-1. Clone o repositório:
-```bash
-git clone https://github.com/GLMiranda0/prototipo-monitoramento-vibracao.git
-cd prototipo-monitoramento-vibracao
-```
-
-2. Configure as credenciais Wi-Fi:
-```bash
-cp src/secrets.h.example src/secrets.h
-# Edite src/secrets.h com seus SSIDs e senhas
-```
-
-3. Compile e faça upload via PlatformIO:
 ```bash
 pio run -t upload
 ```
 
-4. Monitore a saída serial:
+### Monitor Serial
+
 ```bash
 pio device monitor -b 115200
 ```
 
-### Dashboard
-
-1. Instale as dependências:
-```bash
-pip install -r dashboard/requirements.txt
-```
-
-2. Rode o dashboard:
-```bash
-streamlit run dashboard/dashboard.py
-```
-
-3. Acesse `http://localhost:8501`, selecione a porta COM da ESP32 na sidebar e clique em **Conectar**.
-
-> **Atenção:** a porta Serial só pode ser usada por um processo por vez. Feche o monitor serial do PlatformIO antes de abrir o dashboard.
-
-### Configuração do Sensor
-
-O MPU6050 deve ser conectado ao ESP32 nos seguintes pinos:
-
-| Pino MPU6050 | Pino ESP32 |
-|---|---|
-| SDA | GPIO21 |
-| SCL | GPIO22 |
-| VCC | 3.3V |
-| GND | GND |
+O IP do dispositivo é exibido no monitor após a conexão Wi-Fi.
 
 ## Histórico de Versões
 
-O projeto segue versionamento semântico simplificado:
-- **0.x** — Desenvolvimento e coleta de dados
-- **1.0** — Entrega final à faculdade
-
-| Versão | Tag | Descrição |
-|--------|-----|-----------|
-| 0.1  | `v0.1`  | Leitura Serial básica, cálculo de magnitude e filtro EMA |
-| 0.11 | `v0.11` | Conexão Wi-Fi multi-rede, timestamp NTP e secrets.h |
-| 0.12 | `v0.12` | Batch JSON (50 amostras/1s), EMA no payload, dashboard Streamlit |
-| 0.13 | `v0.13` | Features no firmware: RMS, Peak e Desvio Padrão; dashboard atualizado |
-| 0.14 | `v0.14` | Normalização pela gravidade: magnitude adimensional, calibração no boot, comando CAL via Serial |
-| 0.2  | `v0.2`  | Integração MQTT *(planejado)* |
-| 0.3  | `v0.3`  | Coleta de dataset e modelo de detecção de anomalia *(planejado)* |
-| 1.0  | `v1.0`  | Entrega final à faculdade *(planejado)* |
+| Versão | Descrição |
+|--------|-----------|
+| 0.1  | Leitura Serial básica, magnitude e filtro EMA |
+| 0.11 | Wi-Fi multi-rede, timestamp NTP |
+| 0.12 | Batch JSON, EMA no payload |
+| 0.13 | Features no firmware: RMS, Peak, Desvio Padrão |
+| 0.14 | Normalização pela gravidade, calibração no boot, comando CAL Serial |
+| 0.2  | Integração MQTT com Home Assistant |
+| 0.3  | Interface web de configuração, WiFiManager, configuração persistente via NVS |
 
 ## Roadmap
 
-- [x] Leitura e filtragem de dados do MPU6050
-- [x] Transmissão com timestamp NTP
-- [x] Payload em batch JSON
-- [x] Dashboard Streamlit em tempo real
-- [x] Features de domínio do tempo: EMA, RMS, Peak, Desvio Padrão
-- [x] Normalização pela gravidade (independente de orientação, saída adimensional)
-- [ ] Broker MQTT para transmissão sem fio
-- [ ] Acoplamento à esteira motorizada (impressão 3D)
+- [x] Leitura e filtragem do MPU6050
+- [x] Timestamp NTP
+- [x] Batch JSON com features de domínio do tempo
+- [x] Normalização pela gravidade (adimensional, independente de orientação)
+- [x] Transmissão MQTT
+- [x] Interface web de configuração (sem recompilar)
+- [x] Provisionamento Wi-Fi via portal AP
+- [ ] Acoplamento à esteira motorizada
 - [ ] Coleta de dataset Normal/Anômalo
-- [ ] Treinamento do modelo de detecção de anomalia
-- [ ] Inferência embarcada na ESP32
+- [ ] Treinamento e inferência do modelo de detecção de anomalia
