@@ -1,10 +1,12 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 #include <WiFiManager.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
 #include <Preferences.h>
-#include <PubSubClient.h>
 #include <time.h>
 #include <ArduinoJson.h>
 #include <math.h>
@@ -13,38 +15,28 @@
 // ── MPU6050 ────────────────────────────────────────────────────────────────────
 #define MPU_ADDR 0x68
 
+// ── API ────────────────────────────────────────────────────────────────────────
+const char* DEVICE_TOKEN = "afa80c3c-a9f9-433c-a8b1-d5daadcc53c6";
+const char* INGEST_URL   = "https://90a993df-87ae-4f5e-abc1-ad4a8dac7944-00-2rd0rgeso3kmq.picard.replit.dev/api/ingest";
+
 // ── Defaults ───────────────────────────────────────────────────────────────────
-#define DEF_BROKER    "192.168.1.1"
-#define DEF_PORT      1883
-#define DEF_USER      ""
-#define DEF_PASS      ""
-#define DEF_ID        "esp32-vibration"
-#define DEF_T_FEAT    "vibration/esp32/features"
-#define DEF_T_STATUS  "vibration/esp32/status"
-#define DEF_T_CAL     "vibration/esp32/calibration"
-#define DEF_BATCH     50
-#define DEF_ALPHA     0.2f
-#define DEF_DELAY     20
-#define DEF_CAL_N     200
-#define MAX_BATCH     500
+#define DEF_BATCH   50
+#define DEF_ALPHA   0.2f
+#define DEF_DELAY   20
+#define DEF_CAL_N   200
+#define MAX_BATCH   500
 
 // ── Objetos ────────────────────────────────────────────────────────────────────
-Preferences  prefs;
-WebServer    server(80);
-WiFiClient   wifiClient;
-PubSubClient mqtt(wifiClient);
-WiFiManager  wm;
+Preferences prefs;
+WebServer   server(80);
+WiFiManager wm;
+
+// Hostname mDNS derivado do MAC — único por dispositivo, permanente
+// Formato: "vibra-XXXXXX" → acesso via http://vibra-XXXXXX.local
+char deviceHostname[24];
 
 // ── Config em runtime ──────────────────────────────────────────────────────────
 struct Config {
-  char  broker[64];
-  int   port;
-  char  user[32];
-  char  pass[64];
-  char  id[32];
-  char  t_feat[64];
-  char  t_status[64];
-  char  t_cal[64];
   int   batch;
   float alpha;
   int   delay_ms;
@@ -61,22 +53,15 @@ struct Readings {
 float Vf             = 0;
 float grav_magnitude = 1.0f;
 bool  calibrado      = false;
+bool  last_post_ok   = false;
 
-volatile bool req_cal         = false;
-volatile bool req_restart     = false;
-volatile bool req_wifi_reset  = false;
+volatile bool req_cal        = false;
+volatile bool req_restart    = false;
+volatile bool req_wifi_reset = false;
 
 // ── Preferences ────────────────────────────────────────────────────────────────
 void loadConfig() {
   prefs.begin("cfg", true);
-  strlcpy(cfg.broker,   prefs.getString("broker",   DEF_BROKER).c_str(),   sizeof(cfg.broker));
-  cfg.port = prefs.getInt("port", DEF_PORT);
-  strlcpy(cfg.user,     prefs.getString("user",     DEF_USER).c_str(),     sizeof(cfg.user));
-  strlcpy(cfg.pass,     prefs.getString("pass",     DEF_PASS).c_str(),     sizeof(cfg.pass));
-  strlcpy(cfg.id,       prefs.getString("id",       DEF_ID).c_str(),       sizeof(cfg.id));
-  strlcpy(cfg.t_feat,   prefs.getString("t_feat",   DEF_T_FEAT).c_str(),   sizeof(cfg.t_feat));
-  strlcpy(cfg.t_status, prefs.getString("t_status", DEF_T_STATUS).c_str(), sizeof(cfg.t_status));
-  strlcpy(cfg.t_cal,    prefs.getString("t_cal",    DEF_T_CAL).c_str(),    sizeof(cfg.t_cal));
   cfg.batch    = prefs.getInt  ("batch",    DEF_BATCH);
   cfg.alpha    = prefs.getFloat("alpha",    DEF_ALPHA);
   cfg.delay_ms = prefs.getInt  ("delay_ms", DEF_DELAY);
@@ -86,18 +71,10 @@ void loadConfig() {
 
 void saveConfig() {
   prefs.begin("cfg", false);
-  prefs.putString("broker",   cfg.broker);
-  prefs.putInt   ("port",     cfg.port);
-  prefs.putString("user",     cfg.user);
-  prefs.putString("pass",     cfg.pass);
-  prefs.putString("id",       cfg.id);
-  prefs.putString("t_feat",   cfg.t_feat);
-  prefs.putString("t_status", cfg.t_status);
-  prefs.putString("t_cal",    cfg.t_cal);
-  prefs.putInt   ("batch",    cfg.batch);
-  prefs.putFloat ("alpha",    cfg.alpha);
-  prefs.putInt   ("delay_ms", cfg.delay_ms);
-  prefs.putInt   ("cal_n",    cfg.cal_n);
+  prefs.putInt  ("batch",    cfg.batch);
+  prefs.putFloat("alpha",    cfg.alpha);
+  prefs.putInt  ("delay_ms", cfg.delay_ms);
+  prefs.putInt  ("cal_n",    cfg.cal_n);
   prefs.end();
 }
 
@@ -125,27 +102,58 @@ void calibrarGravidade() {
   calibrado = true;
   Vf = 0;
   Serial.printf("Magnitude de repouso: %.2f LSB | repouso≈1.0 vibração>1.0\n", grav_magnitude);
-
-  if (mqtt.connected()) {
-    char msg[64];
-    snprintf(msg, sizeof(msg), "{\"grav_magnitude\":%.2f}", grav_magnitude);
-    mqtt.publish(cfg.t_cal, msg, true);
-  }
 }
 
 float magnitudeNorm(int16_t x, int16_t y, int16_t z) {
   return sqrt((float)x*x + (float)y*y + (float)z*z) / grav_magnitude;
 }
 
-// ── MQTT ───────────────────────────────────────────────────────────────────────
-void reconnectMQTT() {
-  if (mqtt.connected()) return;
-  const char *u = strlen(cfg.user) ? cfg.user : nullptr;
-  const char *p = strlen(cfg.pass) ? cfg.pass : nullptr;
-  if (mqtt.connect(cfg.id, u, p, cfg.t_status, 0, true, "offline")) {
-    mqtt.publish(cfg.t_status, "online", true);
-    Serial.println("MQTT conectado.");
+// ── HTTP POST ─────────────────────────────────────────────────────────────────
+void postIngest(int16_t ax, int16_t ay, int16_t az) {
+  char recorded_at[32];
+  time_t now = time(nullptr);
+  strftime(recorded_at, sizeof(recorded_at), "%Y-%m-%dT%H:%M:%S.000Z", gmtime(&now));
+
+  StaticJsonDocument<320> doc;
+  doc["device_token"] = DEVICE_TOKEN;
+  doc["recorded_at"]  = recorded_at;
+  JsonObject payload  = doc.createNestedObject("payload");
+  payload["x"]    = ax;
+  payload["y"]    = ay;
+  payload["z"]    = az;
+  payload["rms"]  = last.rms;
+  payload["ema"]  = last.ema;
+  payload["peak"] = last.peak;
+  payload["std"]  = last.std_dev;
+
+  char body[320];
+  serializeJson(doc, body);
+
+  WiFiClientSecure client;
+  client.setInsecure();   // sem verificação de CA — adequado para dev/apresentação
+
+  HTTPClient http;
+  if (!http.begin(client, INGEST_URL)) {
+    Serial.println("POST: falha ao iniciar conexão");
+    last_post_ok = false;
+    return;
   }
+
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(5000);
+
+  int code = http.POST(body);
+  if (code > 0) {
+    last_post_ok = (code == 200 || code == 201);
+    Serial.printf("POST %d | x=%d y=%d z=%d | %s\n", code, ax, ay, az, recorded_at);
+    if (!last_post_ok) {
+      Serial.println("Resp: " + http.getString());
+    }
+  } else {
+    last_post_ok = false;
+    Serial.printf("POST erro: %s\n", http.errorToString(code).c_str());
+  }
+  http.end();
 }
 
 // ── Handlers Web ───────────────────────────────────────────────────────────────
@@ -154,14 +162,15 @@ void handleRoot() {
 }
 
 void handleStatus() {
-  StaticJsonDocument<192> doc;
-  doc["ip"]     = WiFi.localIP().toString();
-  doc["ssid"]   = WiFi.SSID();
-  doc["mqtt"]   = mqtt.connected();
-  doc["cal"]    = calibrado;
-  doc["grav"]   = grav_magnitude;
-  doc["uptime"] = millis() / 1000;
-  char buf[192];
+  StaticJsonDocument<256> doc;
+  doc["ip"]       = WiFi.localIP().toString();
+  doc["hostname"] = deviceHostname;
+  doc["ssid"]     = WiFi.SSID();
+  doc["api_ok"]   = last_post_ok;
+  doc["cal"]      = calibrado;
+  doc["grav"]     = grav_magnitude;
+  doc["uptime"]   = millis() / 1000;
+  char buf[256];
   serializeJson(doc, buf);
   server.send(200, "application/json", buf);
 }
@@ -180,42 +189,14 @@ void handleReadings() {
 }
 
 void handleGetConfig() {
-  StaticJsonDocument<512> doc;
-  doc["mqtt_broker"]   = cfg.broker;
-  doc["mqtt_port"]     = cfg.port;
-  doc["mqtt_user"]     = cfg.user;
-  doc["mqtt_pass"]     = cfg.pass;
-  doc["mqtt_id"]       = cfg.id;
-  doc["topic_feat"]    = cfg.t_feat;
-  doc["topic_status"]  = cfg.t_status;
-  doc["topic_cal"]     = cfg.t_cal;
-  doc["batch_size"]    = cfg.batch;
-  doc["alpha"]         = cfg.alpha;
-  doc["sample_delay"]  = cfg.delay_ms;
-  doc["cal_samples"]   = cfg.cal_n;
-  char buf[512];
+  StaticJsonDocument<128> doc;
+  doc["batch_size"]   = cfg.batch;
+  doc["alpha"]        = cfg.alpha;
+  doc["sample_delay"] = cfg.delay_ms;
+  doc["cal_samples"]  = cfg.cal_n;
+  char buf[128];
   serializeJson(doc, buf);
   server.send(200, "application/json", buf);
-}
-
-void handlePostMqtt() {
-  StaticJsonDocument<512> doc;
-  if (deserializeJson(doc, server.arg("plain"))) {
-    server.send(400, "application/json", "{\"error\":\"json invalido\"}");
-    return;
-  }
-  if (doc["mqtt_broker"].is<const char*>())  strlcpy(cfg.broker,   doc["mqtt_broker"],   sizeof(cfg.broker));
-  if (doc["mqtt_port"].is<int>())            cfg.port = doc["mqtt_port"];
-  if (doc["mqtt_user"].is<const char*>())    strlcpy(cfg.user,     doc["mqtt_user"],     sizeof(cfg.user));
-  if (doc["mqtt_pass"].is<const char*>())    strlcpy(cfg.pass,     doc["mqtt_pass"],     sizeof(cfg.pass));
-  if (doc["mqtt_id"].is<const char*>())      strlcpy(cfg.id,       doc["mqtt_id"],       sizeof(cfg.id));
-  if (doc["topic_feat"].is<const char*>())   strlcpy(cfg.t_feat,   doc["topic_feat"],    sizeof(cfg.t_feat));
-  if (doc["topic_status"].is<const char*>()) strlcpy(cfg.t_status, doc["topic_status"],  sizeof(cfg.t_status));
-  if (doc["topic_cal"].is<const char*>())    strlcpy(cfg.t_cal,    doc["topic_cal"],     sizeof(cfg.t_cal));
-  saveConfig();
-  mqtt.setServer(cfg.broker, cfg.port);
-  mqtt.disconnect();
-  server.send(200, "application/json", "{\"ok\":true}");
 }
 
 void handlePostSensor() {
@@ -255,7 +236,6 @@ void setupServer() {
   server.on("/api/status",        HTTP_GET,  handleStatus);
   server.on("/api/readings",      HTTP_GET,  handleReadings);
   server.on("/api/config",        HTTP_GET,  handleGetConfig);
-  server.on("/api/config/mqtt",   HTTP_POST, handlePostMqtt);
   server.on("/api/config/sensor", HTTP_POST, handlePostSensor);
   server.on("/api/calibrate",     HTTP_POST, handleCalibrate);
   server.on("/api/wifi/reset",    HTTP_POST, handleWifiReset);
@@ -270,24 +250,42 @@ void setup() {
 
   loadConfig();
 
-  // WiFiManager: conecta ao Wi-Fi salvo ou abre AP de configuração
-  wm.setConfigPortalTimeout(180);
-  char apName[32];
-  snprintf(apName, sizeof(apName), "VibracaoSensor-%06X",
+  // Hostname derivado do MAC — calculado antes do portal para exibir no captive portal
+  snprintf(deviceHostname, sizeof(deviceHostname), "vibra-%06x",
            (uint32_t)(ESP.getEfuseMac() & 0xFFFFFF));
 
-  if (!wm.autoConnect(apName)) {
+  WiFi.setHostname(deviceHostname);   // aparece no DHCP do roteador
+
+  // Exibe o domínio mDNS na página de configuração Wi-Fi
+  char portalInfo[128];
+  snprintf(portalInfo, sizeof(portalInfo),
+           "<p style='text-align:center;font-size:14px'>"
+           "Ap&oacute;s configurar, acesse:<br>"
+           "<b>http://%s.local</b></p>", deviceHostname);
+  wm.setCustomMenuHTML(portalInfo);
+  wm.setConfigPortalTimeout(180);
+
+  // AP com mesmo identificador do hostname → usuário infere o domínio pelo nome da rede
+  if (!wm.autoConnect(deviceHostname)) {
     Serial.println("Falha no WiFiManager, reiniciando...");
     ESP.restart();
   }
 
+  if (MDNS.begin(deviceHostname)) {
+    MDNS.addService("http", "tcp", 80);
+    Serial.println("mDNS: http://" + String(deviceHostname) + ".local");
+  } else {
+    Serial.println("Erro ao iniciar mDNS");
+  }
+
   Serial.println("Wi-Fi: " + WiFi.localIP().toString() + " (" + WiFi.SSID() + ")");
 
-  configTime(-3 * 3600, 0, "pool.ntp.org", "time.google.com");
-
-  mqtt.setServer(cfg.broker, cfg.port);
-  mqtt.setBufferSize(512);
-  reconnectMQTT();
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
+  // Aguarda sincronização NTP (necessário para recorded_at correto)
+  Serial.print("Sincronizando NTP");
+  time_t t = 0;
+  while (t < 1000000000) { delay(200); time(&t); Serial.print('.'); }
+  Serial.println(" OK");
 
   // Wake up MPU6050
   Wire.beginTransmission(MPU_ADDR);
@@ -299,7 +297,10 @@ void setup() {
   calibrarGravidade();
 
   setupServer();
-  Serial.println("Web UI: http://" + WiFi.localIP().toString());
+  Serial.println("═══════════════════════════════════════");
+  Serial.println("  Acesse: http://" + String(deviceHostname) + ".local");
+  Serial.println("  IP:     http://" + WiFi.localIP().toString());
+  Serial.println("═══════════════════════════════════════");
   Serial.println("Pronto. Serial: CAL para recalibrar.");
 }
 
@@ -315,23 +316,21 @@ void processSerial() {
 void loop() {
   server.handleClient();
   processSerial();
-  mqtt.loop();
 
   if (req_restart)    { delay(100); ESP.restart(); }
   if (req_wifi_reset) { wm.resetSettings(); delay(100); ESP.restart(); }
   if (req_cal)        { req_cal = false; calibrarGravidade(); }
 
   if (WiFi.status() != WL_CONNECTED) { delay(500); return; }
-  reconnectMQTT();
 
   // ── Coleta do batch ──────────────────────────────────────────────────────────
-  int   bs        = constrain(cfg.batch, 10, MAX_BATCH);
-  float soma      = 0, soma_q = 0, peak = 0, soma_d2 = 0;
-  float mags[MAX_BATCH];
+  int     bs      = constrain(cfg.batch, 10, MAX_BATCH);
+  float   soma    = 0, soma_q = 0, peak = 0, soma_d2 = 0;
+  float   mags[MAX_BATCH];
+  int16_t last_ax = 0, last_ay = 0, last_az = 0;
 
   for (int i = 0; i < bs; i++) {
     server.handleClient();
-    mqtt.loop();
 
     int16_t ax, ay, az;
     lerMPU(ax, ay, az);
@@ -342,6 +341,8 @@ void loop() {
     soma     += V;
     soma_q   += V * V;
     if (V > peak) peak = V;
+
+    last_ax = ax; last_ay = ay; last_az = az;
 
     delay(cfg.delay_ms);
   }
@@ -356,16 +357,8 @@ void loop() {
   last = { Vf, rms, peak, std_dev, true,
            (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000 };
 
-  Serial.printf("EMA=%.4f RMS=%.4f Peak=%.4f Std=%.4f\n", Vf, rms, peak, std_dev);
+  Serial.printf("EMA=%.4f RMS=%.4f Peak=%.4f Std=%.4f | x=%d y=%d z=%d\n",
+                Vf, rms, peak, std_dev, last_ax, last_ay, last_az);
 
-  if (mqtt.connected()) {
-    StaticJsonDocument<128> feat;
-    feat["ema"]  = serialized(String(Vf,      4));
-    feat["rms"]  = serialized(String(rms,     4));
-    feat["peak"] = serialized(String(peak,    4));
-    feat["std"]  = serialized(String(std_dev, 4));
-    char buf[128];
-    serializeJson(feat, buf);
-    mqtt.publish(cfg.t_feat, buf);
-  }
+  postIngest(last_ax, last_ay, last_az);
 }

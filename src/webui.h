@@ -175,7 +175,7 @@ hr.div{border:none;border-top:1px solid var(--border);margin:16px 0}
   </div>
   <div class="mqtt-badge">
     <div class="dot" id="dot"></div>
-    <span id="mqtt-lbl">MQTT</span>
+    <span id="api-lbl">API</span>
   </div>
 </header>
 
@@ -217,59 +217,6 @@ hr.div{border:none;border-top:1px solid var(--border);margin:16px 0}
         <button class="btn btn-ghost" onclick="loadReadings()">&#8635; Atualizar</button>
         <button class="btn btn-primary" id="btn-cal" onclick="calibrate()">&#9878; Calibrar</button>
       </div>
-    </div>
-  </div>
-
-  <!-- ── MQTT ── -->
-  <div class="card">
-    <div class="card-head">
-      <div class="card-icon">
-        <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9,22 9,12 15,12 15,22"/></svg>
-      </div>
-      <h2>MQTT</h2>
-    </div>
-
-    <div class="fg">
-      <label>Broker</label>
-      <input type="text" id="mqtt_broker" placeholder="192.168.1.100">
-    </div>
-    <div class="row2">
-      <div class="fg">
-        <label>Porta</label>
-        <input type="number" id="mqtt_port" min="1" max="65535" placeholder="1883">
-      </div>
-      <div class="fg">
-        <label>Client ID</label>
-        <input type="text" id="mqtt_id" placeholder="esp32-vibration">
-      </div>
-    </div>
-    <div class="row2">
-      <div class="fg">
-        <label>Usu&aacute;rio</label>
-        <input type="text" id="mqtt_user" placeholder="(opcional)">
-      </div>
-      <div class="fg">
-        <label>Senha</label>
-        <input type="password" id="mqtt_pass" placeholder="(opcional)">
-      </div>
-    </div>
-
-    <div class="sec">T&oacute;picos</div>
-    <div class="fg">
-      <label>Features</label>
-      <input type="text" id="topic_feat">
-    </div>
-    <div class="fg">
-      <label>Status</label>
-      <input type="text" id="topic_status">
-    </div>
-    <div class="fg">
-      <label>Calibra&ccedil;&atilde;o</label>
-      <input type="text" id="topic_cal">
-    </div>
-
-    <div class="actions">
-      <button class="btn btn-primary" onclick="saveMqtt()">Salvar MQTT</button>
     </div>
   </div>
 
@@ -321,6 +268,10 @@ hr.div{border:none;border-top:1px solid var(--border);margin:16px 0}
     <div class="info">
       <span class="k">Endere&ccedil;o IP</span>
       <span class="v" id="ip-lbl2">—</span>
+    </div>
+    <div class="info">
+      <span class="k">Nome local (mDNS)</span>
+      <a class="v" id="mdns-lbl" href="#" target="_blank" style="color:var(--orange);text-decoration:none">—</a>
     </div>
 
     <div class="actions" style="margin-top:14px">
@@ -380,42 +331,31 @@ async function loadReadings() {
 async function loadStatus() {
   try {
     const s = await api('/api/status');
-    document.getElementById('ip-lbl').textContent  = s.ip;
-    document.getElementById('ip-lbl2').textContent = s.ip;
+    document.getElementById('ip-lbl').textContent   = s.ip;
+    document.getElementById('ip-lbl2').textContent  = s.ip;
     document.getElementById('ssid-lbl').textContent = s.ssid;
     const dot = document.getElementById('dot');
-    const lbl = document.getElementById('mqtt-lbl');
-    dot.className = 'dot ' + (s.mqtt ? 'on' : 'off');
-    lbl.textContent = s.mqtt ? 'MQTT online' : 'MQTT offline';
+    const lbl = document.getElementById('api-lbl');
+    dot.className = 'dot ' + (s.api_ok ? 'on' : 'off');
+    lbl.textContent = s.api_ok ? 'API ok' : 'API erro';
+    if (s.hostname) {
+      const mdns = document.getElementById('mdns-lbl');
+      const url = 'http://' + s.hostname + '.local';
+      mdns.textContent = s.hostname + '.local';
+      mdns.href = url;
+    }
   } catch(e) {}
 }
 
 async function loadConfig() {
   try {
     const c = await api('/api/config');
-    ['mqtt_broker','mqtt_port','mqtt_user','mqtt_pass','mqtt_id',
-     'topic_feat','topic_status','topic_cal',
-     'batch_size','sample_delay','cal_samples'].forEach(k => {
+    ['batch_size','sample_delay','cal_samples'].forEach(k => {
       const el = document.getElementById(k);
       if (el && c[k] !== undefined) el.value = c[k];
     });
     syncAlpha(c.alpha ?? 0.2);
   } catch(e) {}
-}
-
-async function saveMqtt() {
-  const keys = ['mqtt_broker','mqtt_port','mqtt_user','mqtt_pass','mqtt_id',
-                'topic_feat','topic_status','topic_cal'];
-  const body = {};
-  keys.forEach(k => {
-    const el = document.getElementById(k);
-    body[k] = (k === 'mqtt_port') ? Number(el.value) : el.value;
-  });
-  try {
-    await api('/api/config/mqtt', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-    toast('Configurações MQTT salvas!');
-  } catch(e) { toast('Erro: ' + e.message, 'err'); }
 }
 
 async function saveSensor() {

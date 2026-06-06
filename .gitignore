@@ -27,3 +27,6 @@ dist/
 *.o
 *.a
 *.so
+
+# Claude Code
+.claude/
