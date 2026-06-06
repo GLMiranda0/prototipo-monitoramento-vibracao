@@ -242,7 +242,3 @@ pio device monitor -b 115200
 - [x] mDNS — acesso por hostname sem precisar saber o IP
 - [x] Configuração persistente em flash (Preferences)
 - [x] Transmissão HTTP para API SaaS
-- [ ] Acoplamento à esteira motorizada (impressão 3D)
-- [ ] Coleta de dataset Normal/Anômalo
-- [ ] Treinamento do modelo de detecção de anomalia
-- [ ] Inferência embarcada na ESP32
